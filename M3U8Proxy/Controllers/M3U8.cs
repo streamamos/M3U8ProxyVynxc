@@ -23,7 +23,7 @@ public partial class Proxy
 
     public Proxy(IConfiguration configuration)
     {
-        _baseUrl = configuration["ProxyUrl"]!;
+        _baseUrl = Environment.GetEnvironmentVariable("PROXY_URL") ?? configuration["ProxyUrl"];
         _proxyUrl = _baseUrl + "proxy/";
         _m3U8Url = _baseUrl + "proxy/m3u8/";
         _encryptedUrl = _baseUrl + "video/";
