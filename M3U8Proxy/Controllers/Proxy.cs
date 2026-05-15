@@ -1,4 +1,4 @@
-﻿using System.Net.Http.Headers;
+using System.Net.Http.Headers;
 using System.Web;
 using AspNetCore.Proxy;
 using AspNetCore.Proxy.Options;
@@ -8,6 +8,7 @@ using M3U8Proxy.RequestHandler.BeforeSend;
 using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
+using System.Text;
 
 namespace M3U8Proxy.Controllers;
 
@@ -64,6 +65,76 @@ public partial class Proxy : Controller
         {
             HandleExceptionResponse(e);
             return Task.FromResult(0);
+        }
+    }
+
+    [HttpPost]
+    [Route("{url}/{headers?}/{type?}")]
+    public async Task PostProxy(string url, string? headers = "{}", string? forcedHeadersProxy = "{}")
+    {
+        try
+        {
+            url = HttpUtility.UrlDecode(url);
+            headers = HttpUtility.UrlDecode(headers!);
+            forcedHeadersProxy = HttpUtility.UrlDecode(forcedHeadersProxy!);
+
+            var forcedHeadersProxyDictionary =
+                JsonConvert.DeserializeObject<Dictionary<string, string>>(forcedHeadersProxy);
+            var headersDictionary = JsonConvert.DeserializeObject<Dictionary<string, string>>(headers);
+
+            // Read the request body
+            string requestBody = "";
+            using (var reader = new StreamReader(Request.Body))
+            {
+                requestBody = await reader.ReadToEndAsync();
+            }
+
+            var options = HttpProxyOptionsBuilder.Instance
+                .WithShouldAddForwardedHeaders(false)
+                .WithBeforeSend((_, hrm) =>
+                {
+                    if (headersDictionary == null) return Task.CompletedTask;
+                    BeforeSend.RemoveHeaders(hrm);
+                    
+                    // Create content if we have a body
+                    if (!string.IsNullOrEmpty(requestBody))
+                    {
+                        // Determine content type
+                        string contentType = "application/json"; // default
+                        if (headersDictionary.ContainsKey("Content-Type"))
+                        {
+                            contentType = headersDictionary["Content-Type"];
+                            headersDictionary.Remove("Content-Type"); // Remove so it doesn't get added as request header
+                        }
+                        
+                        hrm.Content = new StringContent(requestBody, Encoding.UTF8, contentType);
+                    }
+                    
+                    // Add remaining headers (Content-Type is now handled)
+                    BeforeSend.AddHeaders(headersDictionary, hrm);
+                    hrm.Headers.Remove("Host");
+
+                    return Task.CompletedTask;
+                })
+                .WithHandleFailure(async (context, e) =>
+                {
+                    context.Response.StatusCode = context.Response.StatusCode;
+                    await context.Response.WriteAsync(JsonConvert.SerializeObject(e));
+                })
+                .WithAfterReceive((_, hrm) =>
+                {
+                    AfterReceive.RemoveHeaders(hrm);
+                    AfterReceive.AddForcedHeaders(forcedHeadersProxyDictionary, hrm);
+                    hrm.Headers.Remove("Cross-Origin-Resource-Policy");
+                    hrm.Headers.Add("Cross-Origin-Resource-Policy", "*");
+                    return Task.CompletedTask;
+                })
+                .Build();
+            await this.HttpProxyAsync(url, options);
+        }
+        catch (Exception e)
+        {
+            HandleExceptionResponse(e);
         }
     }
 
